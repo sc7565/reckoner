@@ -1,4 +1,4 @@
-#Copyright 2017 Reactive Ops Inc.
+#Copyright 2017 FairwindsOps Inc.
 #
 #Licensed under the Apache License, Version 2.0 (the “License”);
 #you may not use this file except in compliance with the License.
@@ -15,15 +15,12 @@
 version: 2.1
 
 executors:
-  python-2-7:
-    docker:
-      - image: circleci/python:2.7
   python-3-6:
     docker:
-      - image: circleci/python:3.6
+      - image: circleci/python:3.6-stretch
   python-3-7:
     docker:
-      - image: circleci/python:3.7
+      - image: circleci/python:3.7-stretch
   vm:
     machine:
       enabled: true
@@ -32,21 +29,6 @@ executors:
       xcode: 10.2.0
 
 jobs:
-  build-2-7:
-    executor: python-2-7
-    working_directory: ~/reckoner
-    steps:
-      - run:
-          name: Setup PATH to support pip user installs
-          command: echo 'export PATH=$PATH:/home/circleci/.local/bin' >> $BASH_ENV
-      - checkout
-      - run:
-          name: Unit Tests
-          command: |
-            pip install --user -r development-requirements.txt
-            pip install --user -e .
-            reckoner --version
-            pytest
   build-3-6:
     executor: python-3-6
     working_directory: ~/reckoner
@@ -76,7 +58,8 @@ jobs:
             pip install --user -r development-requirements.txt
             pip install --user -e .
             reckoner --version
-            pytest
+            pytest --cov ./
+            codecov
   release:
     executor: python-3-7
     environment:
@@ -113,7 +96,7 @@ jobs:
             pip install --user .
             cd installer
             python -c 'from setuptools_scm import get_version; get_version(root="..", write_to="reckoner/version.txt")'
-            pyinstaller --noconfirm --paths .:../ --onefile --add-data ../reckoner/version.txt:reckoner --name reckoner cli.py
+            pyinstaller --noconfirm --paths .:../ --onefile --add-data ../reckoner/version.txt:reckoner --add-data ../reckoner/assets/course.schema.json:reckoner/assets --name reckoner cli.py
       - run:
           name: persist binaries
           command: |
@@ -143,7 +126,7 @@ jobs:
             python3 -c 'from setuptools_scm import get_version; get_version(root="..", write_to="reckoner/version.txt")'
 
             echo "Running the binary compiler"
-            pyinstaller --noconfirm --paths .:../ --onefile --add-data ../reckoner/version.txt:reckoner --name reckoner cli.py
+            pyinstaller --noconfirm --paths .:../ --onefile --add-data ../reckoner/version.txt:reckoner --add-data ../reckoner/assets/course.schema.json:reckoner/assets --name reckoner cli.py
 
             echo "Running the new Binary"
             ./dist/reckoner version
@@ -169,69 +152,10 @@ jobs:
           at: /tmp/binaries
       - run:
           name: Setup Testing Environment
-          command: |
-            echo "Installing git and jq"
-            sudo apt-get install -yqq jq git
-
-            echo "Installing Reckoner"
-            sudo cp /tmp/binaries/reckoner-linux-amd64 /usr/local/bin/reckoner
-            reckoner version
-
-            echo "Installing Kind"
-            curl -sLO https://github.com/kubernetes-sigs/kind/releases/download/0.2.1/kind-linux-amd64
-            chmod 0755 kind-linux-amd64
-            sudo mv kind-linux-amd64 /usr/local/bin/kind
-            kind version
-
-            echo "Installing Kubectl"
-            curl -sLO https://storage.googleapis.com/kubernetes-release/release/v1.12.7/bin/linux/amd64/kubectl
-            chmod 0755 kubectl
-            sudo mv kubectl /usr/local/bin/
-            kubectl version --client
-
-            echo "Installing Helm"
-            curl -sL https://storage.googleapis.com/kubernetes-helm/helm-v2.13.1-linux-amd64.tar.gz | tar xzv linux-amd64/helm
-            sudo mv linux-amd64/helm /usr/local/bin/helm
-            rm -rf linux-amd64
-            helm version --client
-
-            echo "Creating Kubernetes Cluster with Kind"
-            kind create cluster --wait=90s
-            docker ps -a
-
-            echo "Setting up kubecfg"
-            cp $(kind get kubeconfig-path --name=kind) ~/.kube/config
-            kubectl version
-
-            echo "Setting up Helm on Kubernetes"
-            kubectl -n kube-system create serviceaccount tiller
-            kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount kube-system:tiller
-            helm init --service-account tiller --wait
+          command: "./end_to_end_testing/setup.sh"
       - run:
-          name: basic.yml Test Running Whole Course
-          command: |
-            test_environ_var=testing reckoner plot end_to_end_testing/basic.yml
-            helm list --output json | jq . -C
-      - run:
-          name: basic.yml Check reckoner run for installed services
-          command: |
-            helm list --output json | jq -e '.Releases[]|select(.Name == "nginx-ingress")|.Namespace == "infra"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "go-harbor")|.Namespace == "test"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "redis-env")|.Namespace == "redis-test-namespace"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "nginx-ingress")|.Status == "DEPLOYED"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "go-harbor")|.Status == "DEPLOYED"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "redis-env")|.Status == "DEPLOYED"'
-            helm list --output json | jq -e '[.Releases[].Name] | contains(["redis-hook"])'
-            helm list --output json | jq -e '[.Releases[].Name] | contains(["redis-failed-hook"])|not'
-      - run:
-          name: basic.yml Test Running Only One Chart
-          command: |
-            reckoner plot --only nginx-ingress end_to_end_testing/basic.yml
-            helm list --output json | jq -e '.Releases[]|select(.Name == "nginx-ingress")|.Status == "DEPLOYED"'
-
-            reckoner plot --only nginx-ingress --only redis-env end_to_end_testing/basic.yml
-            helm list --output json | jq -e '.Releases[]|select(.Name == "nginx-ingress")|.Status == "DEPLOYED"'
-            helm list --output json | jq -e '.Releases[]|select(.Name == "redis-env")|.Status == "DEPLOYED"'
+          name: Run end to end tests
+          command: "./end_to_end_testing/run_end_to_end.sh"
   publish-binaries:
     executor: python-3-7
     steps:
@@ -240,12 +164,12 @@ jobs:
       - run:
           name: find release tag
           command: |
-            release_id=$(curl -s -H "Authorization: token ${GITHUB_ACCESS_TOKEN}" -X GET https://api.github.com/repos/reactiveops/reckoner/releases/tags/${CIRCLE_TAG} | jq -e .id)
+            release_id=$(curl -s -H "Authorization: token ${GITHUB_ACCESS_TOKEN}" -X GET https://api.github.com/repos/FairwindsOps/reckoner/releases/tags/${CIRCLE_TAG} | jq -e .id)
             echo "Found Release (${release_id})"
             echo "Posting Binaries to Release"
 
             for filename in /tmp/binaries/*; do
-              publish_url="https://uploads.github.com/repos/reactiveops/reckoner/releases/${release_id}/assets?name=$(basename ${filename})"
+              publish_url="https://uploads.github.com/repos/FairwindsOps/reckoner/releases/${release_id}/assets?name=$(basename ${filename})"
               echo "Publishing ${filename} to ${publish_url}"
               curl \
                 --fail \
@@ -261,12 +185,6 @@ workflows:
   version: 2
   build:
     jobs:
-      - build-2-7:
-          filters:
-            tags:
-              only: /.*/
-            branches:
-              only: /.*/
       - build-3-6:
           filters:
             tags:
@@ -281,7 +199,6 @@ workflows:
               only: /.*/
       - compile-darwin:
           requires:
-            - build-2-7
             - build-3-6
             - build-3-7
           filters:
@@ -291,7 +208,6 @@ workflows:
               only: /.*/
       - compile:
           requires:
-            - build-2-7
             - build-3-6
             - build-3-7
           filters:

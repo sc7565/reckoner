@@ -1,6 +1,6 @@
 # -- coding: utf-8 --
 
-# Copyright 2019 ReactiveOps Inc
+# Copyright 2019 FairwindsOps Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +42,7 @@ class Config(object):
     def __init__(self):
         self.__dict__ = self._config
         self._installed_repositories = []
+        self.continue_on_error = self._config.get('continue_on_error')
 
     @property
     def home(self):

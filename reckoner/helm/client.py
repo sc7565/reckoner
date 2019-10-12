@@ -1,4 +1,4 @@
-# Copyright 2019 ReactiveOps Inc
+# Copyright 2019 FairwindsOps Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import logging
 
 class HelmClient(object):
     version_regex = re.compile(r'[a-zA-Z]+: v([0-9\.]+)(\+g[0-9a-f]+)?')
+    version_3_regex = re.compile(r'v([0-9\.]+)([\-,\+][a-zA-Z]+)(\+g[0-9a-f]+)?')
     repository_header_regex = re.compile(r'^NAME\s+URL$')
     global_helm_flags = ['debug', 'home', 'host', 'kube-context', 'kubeconfig',
                          'tiller-connection_timeout', 'tiller-namespace']
@@ -39,7 +40,7 @@ class HelmClient(object):
         """Setter of the default helm arguments to override"""
         self._default_helm_arguments = value
 
-    def execute(self, command, arguments=[], filter_non_global_flags=False):
+    def execute(self, command, arguments=[], filter_non_global_flags=False, plugin=None):
         """
         Run the command with the help of the provider.
 
@@ -53,11 +54,16 @@ class HelmClient(object):
 
         arguments = default_args + list(arguments)
 
-        command = HelmCommand(
+        # If we need to run wrapped in a plugin, then put that command first, always
+        if plugin:
+            arguments = [command] + arguments
+            command = plugin
+
+        helm_command = HelmCommand(
             command=command,
             arguments=arguments,
         )
-        response = self._provider.execute(command)
+        response = self._provider.execute(helm_command)
         if response.succeeded:
             return response
         else:
@@ -66,11 +72,11 @@ class HelmClient(object):
 
     @property
     def client_version(self):
-        return self._get_version('--client')
+        return self._get_version(kind='--client')
 
     @property
     def server_version(self):
-        return self._get_version('--server')
+        return self._get_version(kind='--server')
 
     @property
     def repositories(self):
@@ -91,12 +97,12 @@ class HelmClient(object):
     def check_helm_command(self):
         return self.execute("help", [], filter_non_global_flags=True).succeeded
 
-    def upgrade(self, args, install=True):
+    def upgrade(self, args, install=True, plugin=None):
         if install:
             arguments = ['--install'] + args
         else:
             arguments = args
-        return self.execute("upgrade", arguments)
+        return self.execute("upgrade", arguments, plugin=plugin)
 
     def rollback(self, release):
         raise NotImplementedError(
@@ -147,10 +153,20 @@ class HelmClient(object):
                 list_of_args.remove(arg)
                 logging.debug('This argument {} was not found in valid arguments: {}, removing from list.'.format(arg, ' '.join(HelmClient.global_helm_flags)))
 
-    def _get_version(self, kind='--server'):
-        get_ver = self.execute("version", arguments=['--short', kind], filter_non_global_flags=True)
-        ver = self._find_version(get_ver.stdout)
-
+    def _get_version(self, kind):
+        try:
+            get_ver = self.execute("version", arguments=['--short', kind], filter_non_global_flags=True)
+            ver = self._find_version(get_ver.stdout)
+        except HelmClientException:
+            # check if running helm3, --client and --server flags are removed
+            logging.debug("Caught exception when checking version. Are we using Helm 3?")
+            get_ver = self.execute("version", arguments=['--short'], filter_non_global_flags=True)
+            ver = self._find_version(get_ver.stdout)
+            if ver.startswith('3'):
+                logging.error("\n\n🔥️ 🐲️  Helm 3 is untested and not supported. 🔥️ 🐲️\nhttps://github.com/FairwindsOps/reckoner/issues/118")
+                raise HelmClientException(
+                    "This version of Helm is not supproted."
+                )
         if ver is None:
             raise HelmClientException(
                 """Could not find version!! Could the helm response format have changed?
@@ -163,7 +179,11 @@ class HelmClient(object):
 
     @staticmethod
     def _find_version(raw_version):
-        ver = HelmClient.version_regex.search(str(raw_version))
+        if raw_version.startswith('v3'):
+            ver = HelmClient.version_3_regex.search(str(raw_version))
+        else:
+            ver = HelmClient.version_regex.search(str(raw_version))
+
         if ver:
             return ver.group(1)
         else:

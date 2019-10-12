@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -- coding: utf-8 --
 
-# Copyright 2017 Reactive Ops Inc.
+# Copyright 2017 FairwindsOps Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the “License”);
 # you may not use this file except in compliance with the License.
@@ -26,21 +26,23 @@ except ImportError:
 
 
 setup(name='reckoner',
+      python_requires='~=3.6',
       use_scm_version=True,
       setup_requires=['setuptools_scm'],
       description='Declarative Helm configuration with Git capability',
-      author='ReactiveOps Inc.',
-      author_email='service@reactiveops.com',
-      url='http://reactiveops.com/',
+      author='FairwindsOps Inc.',
+      author_email='service@fairwinds.com',
+      url='http://fairwinds.com/',
       license='Apache2.0',
       packages=find_packages(exclude=('tests', '*.tests')),
+      include_package_data=True,
       install_requires=[
           "click==7.0",
           "GitPython>=2.1.11",
-          "oyaml>=0.8",
           "coloredlogs>=9.0",
           "semver>=2.8.1",
-          "PyYAML>=5.1",
+          "ruamel.yaml>=0.16.0",
+          "jsonschema>=3.0.2",
       ],
       entry_points=''' #for click integration
           [console_scripts]

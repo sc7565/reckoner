@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [2.1.0]
+- Added Helm 3 detection
+
+### Breaking Changes
+- Added end-to-end test for values files in sub-folders
+- Schema Validation
+    - We are introducing schema validation on the course.yml. This will exit hard if your course.yml has indentation errors or other issues that don't conform to the course.yml expected schema. The schema can be found at [here](/reckoner/assets/course.schema.json).
+    - Reckoner now blocks on YAML duplicate keys. If your yaml has duplicate keys in any section of the yaml, the course will fail to load and no actions will be performed. There is no way to allow duplicate keys in course.yml anymore to avoid inconsistent behavior or unexpected course runs.
+    - More details on the implications of schema validations can be found here: [docs/changelog_details/schema_validation.md](/docs/changelog_details/schema_validation.md).
+    - As a part of defining a strict schema for course YAMLs, you will need to house any "reuable" YAML blocks in the top-level-key of `_references: {}`.
+
+### Fixes
+- Fixed the references for values to be relative: `files: []` now are referenced relative to the course yaml you're running. Also added end-to-end test for values files in subfolders.
+
+## [2.0.0]
+### Breaking Changes
+- Changes to `values: {}` behavior:  
+  The chart: {values: {}} config block and chart: {set-values:{}} config block now have different behavior. set-values: {} always gets translated into helm arguments as --set key=value. The values: {} now gets applied to helm arguments as -f temporary_values_name.yml. The values: {} config block is now fully consistent with intended types and would behave as though you are using a -f my_values.yml in your helm command. Prior to this change you would see inconsistent type casting for float, bool and integer config settings. For more information on the behavior differences between `values`, `set-values`, and `values-strings` you can look at our [end to end testing test course.yml](/end_to_end_testing/test_strong_typing.yml).
+- BUG FIX: Using `"null"`, `null`, `"Null"`, and `"NULL"` as values in `set-values: {}` will be interpreted as `null` (void of value) in the `--set` value. Previously, if you set `null` as the yaml value, you would get `--set key=None` due to python interpreting the value as `None` and thus would show up as `{"key": "None"}` in the helm values. This fix more closely aligns with expected behavior in helm.
+
+## [1.4.0]
+### Breaking Changes
+- Removed the `--local-development` flag from `plot` command (unused) and cleaned up test dependencies
+- Reckoner now has exit codes that reflect the state of the course run.  
+  Reckoner will immediately exit with a non-zero exit code when a chart or hook fails to run. Previous
+  behavior to continue on error can be enabled by using the `--continue-on-error` flag on your `plot`.
+
+## [1.3.0]
+### Breaking Changes
+Python2 support is now ended.  Pip install will now require python ~= 3.6.  In any case, use of the binary release is recommended.
+
+## [1.2.0]
+- Support helm wrapper plugins such as [Helm Secrets](https://github.com/futuresimple/helm-secrets)
+- POTENTIAL BREAKING CHANGE: Refactored all helm commands to use `--arg value` instead of `--arg=value`. (This helps with poor param support with how helm plugin wrappers work)
+
 ## [1.1.6]
 - Skipped versions to kickstart pipelines
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -- coding: utf-8 --
 
-# Copyright 2017 Reactive Ops Inc.
+# Copyright 2017 FairwindsOps Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import click
 from .reckoner import Reckoner
 from . import exception
 from .meta import __version__
+from reckoner.schema_validator.course import validate_course_file
 
 
 @click.group(invoke_without_command=True)
@@ -45,19 +46,34 @@ def cli(ctx, log_level, *args, **kwargs):
 @click.option("--helm-args", help='Passes the following arg on to helm, can be used more than once. WARNING: Setting '
                                   'this will completely override any helm_args in the course. Also cannot be used for '
                                   'configuring how helm connects to tiller.', multiple=True)
-@click.option("--local-development", is_flag=True, default=False, help='Run `reckoner` in local-development mode '
-                                                                       'where Tiller is not required and no helm '
-                                                                       'commands are run. Useful for rapid or offline '
-                                                                       'development.')
-def plot(ctx, course_file=None, dry_run=False, debug=False, only=None, helm_args=None, local_development=False):
+@click.option("--continue-on-error", is_flag=True, default=False,
+              help="Attempt to install all charts in the course, even if any charts or hooks fail to run.")
+def plot(ctx, course_file=None, dry_run=False, debug=False, only=None, helm_args=None, continue_on_error=False):
     """ Install charts with given arguments as listed in yaml file argument """
     try:
-        h = Reckoner(course_file=course_file, dryrun=dry_run, debug=debug, helm_args=helm_args, local_development=local_development)
+        # Check Schema of Course FileA
+        with open(course_file.name, 'rb') as course_file_stream:
+            validate_course_file(course_file_stream)
+        # Load Reckoner
+        r = Reckoner(course_file=course_file, dryrun=dry_run, debug=debug, helm_args=helm_args, continue_on_error=continue_on_error)
         # Convert tuple to list
         only = list(only)
-        h.install(only)
-    except exception.ReckonerException:
+        r.install(only)
+    except exception.ReckonerException as err:
+        click.echo(click.style("⛵🔥 Encountered errors while reading course file ⛵🔥", fg="bright_red"))
+        click.echo(click.style("{}".format(err), fg="red"))
+        ctx.exit(1)
+    except Exception as err:
         # This handles exceptions cleanly, no expected stack traces from reckoner code
+        click.echo(click.style("⛵🔥 Encountered unexpected error in Reckoner! Run with --log-level debug to see details! ⛵🔥", fg="bright_red"))
+        if debug:
+            click.echo(click.style("{}".format(err)))
+        ctx.exit(1)
+    if r.results.has_errors:
+        click.echo(click.style("⛵🔥 Encountered errors while running the course ⛵🔥", fg="bright_red"))
+        for result in r.results.results_with_errors:
+            click.echo(click.style("\n* * * * *\n", fg="bright_red"))
+            click.echo(click.style(str(result), fg="bright_red"))
         ctx.exit(1)
 
 

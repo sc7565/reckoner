@@ -1,4 +1,4 @@
-# Copyright 2019 ReactiveOps Inc
+# Copyright 2019 FairwindsOps Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,11 @@
 """Test the chart functions directly"""
 import unittest
 import mock
-from reckoner.chart import Chart
+from reckoner.chart import Chart, ChartResult
 from reckoner.command_line_caller import Response
 from reckoner.exception import ReckonerCommandException
+from reckoner.yaml.handler import Handler
+from io import StringIO
 
 
 @mock.patch('reckoner.chart.Repository')
@@ -44,7 +46,6 @@ class TestChartHooks(unittest.TestCase):
             None,
         )
         chart.config.dryrun = False
-        chart.config.local_development = False
 
         return chart
 
@@ -128,14 +129,6 @@ class TestChartHooks(unittest.TestCase):
         mock_logging.info.assert_called()
         mock_logging.log.assert_called()
 
-    def test_skipping_due_to_local_development(self, mock_cmd_call, *args):
-        """Verify skipping call() when in local_development"""
-        chart = self.get_chart()
-
-        chart.config.local_development = True
-        chart.run_hook('pre_install')
-        mock_cmd_call.assert_not_called()
-
     def test_skipping_due_to_dryrun(self, mock_cmd_call, *args):
         """Verify that we do NOT run the actual calls when dryrun is enabled"""
         chart = self.get_chart()
@@ -185,7 +178,6 @@ class TestCharts(unittest.TestCase):
     def test_interpolation_of_env_vars(self, environMock):
         chart = Chart({'name': {'values': {}}}, None)
         chart.config.dryrun = False
-        chart.config.local_development = False
 
         chart.args = ['thing=${environVar}', 'another=$environVar']
         environMock.environ = {'environVar': 'asdf'}
@@ -198,7 +190,6 @@ class TestCharts(unittest.TestCase):
     def test_interpolation_of_missing_env_vars(self, environMock):
         chart = Chart({'name': {'values': {}}}, None)
         chart.config.dryrun = False
-        chart.config.local_development = False
 
         chart.args = ['thing=${environVar}']
         environMock.environ = {}
@@ -210,10 +201,285 @@ class TestCharts(unittest.TestCase):
     def test_interpolation_of_env_vars_kube_deploy_spec(self, environMock):
         chart = Chart({'name': {'values': {}}}, None)
         chart.config.dryrun = False
-        chart.config.local_development = False
 
         chart.args = ['thing=$(environVar)']
         environMock.environ = {}
 
         chart._check_env_vars()
         self.assertEqual(chart.args[0], 'thing=$(environVar)')
+
+    @mock.patch('reckoner.chart.Repository')
+    def test_chart_install(self, repositoryMock):
+        repo_mock = repositoryMock()
+        repo_mock.chart_path = ""
+        helm_client_mock = mock.MagicMock()
+
+        chart = Chart({'nameofchart': {'namespace': 'fakenamespace', 'set-values': {}}}, helm_client_mock)
+        chart.config.dryrun = False
+
+        chart.install()
+        helm_client_mock.upgrade.assert_called_once()
+        upgrade_call = helm_client_mock.upgrade.call_args
+        self.assertEqual(upgrade_call[0][0], ['nameofchart', '', '--namespace', 'fakenamespace'])
+
+    @mock.patch('reckoner.chart.Repository')
+    def test_chart_install_with_plugin(self, repositoryMock):
+        repo_mock = repositoryMock()
+        repo_mock.chart_path = ""
+        helm_client_mock = mock.MagicMock()
+
+        chart = Chart({'nameofchart': {'namespace': 'fakenamespace', 'plugin': 'someplugin', 'set-values': {}}}, helm_client_mock)
+        chart.config.dryrun = False
+
+        chart.install()
+        helm_client_mock.upgrade.assert_called_once()
+        upgrade_call = helm_client_mock.upgrade.call_args
+        self.assertEqual(upgrade_call[0][0], ['nameofchart', '', '--namespace', 'fakenamespace'])
+        self.assertEqual(upgrade_call[1], {'plugin': 'someplugin'})
+
+
+class TestChartResult(unittest.TestCase):
+    def test_initialize(self):
+        c = ChartResult(
+            name="fake-result",
+            failed=False,
+            error_reason="",
+        )
+
+        assert c
+
+    def test_string_output(self):
+        c = ChartResult(name="fake-result", failed=False, error_reason="oops")
+        string_output = c.__str__()
+        self.assertIn("fake-result", string_output)
+        self.assertIn("Succeeded", string_output)
+        self.assertIn(c.error_reason, string_output)
+
+    def test_status_string(self):
+        c = ChartResult(name="railed-result", failed=True, error_reason="")
+        self.assertEqual(c.status_string, "Failed")
+        c.failed = False
+        self.assertEqual(c.status_string, "Succeeded")
+
+
+class TestTemporaryValuesFiles(unittest.TestCase):
+    """Test the cases for Temporary values files"""
+
+    def test_chart_initializes_empty_file_paths(self):
+        """Assert that we initialize the empty list for new charts"""
+        chart = Chart({"fake-chart": {}}, None)
+        self.assertEqual(chart._temp_values_file_paths, [])
+
+    def test_chart_creates_temp_value_files(self):
+        chart = Chart({"fake-chart": {}}, None)
+        chart.values = {"fake-key": "fake-value"}
+        self.assertEqual(len(chart._temp_values_file_paths), 0)
+
+        chart.build_temp_values_files()
+        self.assertEqual(len(chart._temp_values_file_paths), 1)
+
+    @mock.patch('reckoner.chart.os', autospec=True)
+    def test_remove_temp_files(self, mock_os):
+        """Assert that a temp file in the list has os.remove called against it"""
+        chart = Chart({"fake-chart": {}}, None)
+        chart._temp_values_file_paths.append('non/existent-path')
+        chart.clean_up_temp_files()
+        mock_os.remove.assert_called_once()
+
+
+class TestBuildSetArguments(unittest.TestCase):
+    """Test the build set args for helm chart"""
+
+    def setUp(self):
+        self.chart_object = {
+            "fake-chart": {
+                "set-values": {
+                    "keyone": "valueone",
+                }
+            }
+        }
+
+    def test_flat_key_values(self):
+        chart = Chart(self.chart_object, None)
+
+        self.assertEqual(chart.args, [], "self.args should be empty before running")
+        chart.build_set_arguments()
+        self.assertEqual(chart.args, ["--set", "keyone=valueone"], "Expected build_set_arguments to build --set args correctly.")
+
+    def test_dicts(self):
+        chart = Chart(self.chart_object, None)
+        chart.set_values = {
+            "levelone": {
+                "leveltwo": "valuetwo",
+            }
+        }
+
+        chart.build_set_arguments()
+        self.assertEqual(chart.args, ["--set", "levelone.leveltwo=valuetwo"])
+
+        chart.args = []
+        chart.set_values = {
+            "levelone": {
+                "leveltwo": {
+                    "levelthree": {
+                        "levelfour": "value four",
+                    }
+                }
+            }
+        }
+        chart.build_set_arguments()
+        self.assertEqual(chart.args, ["--set", "levelone.leveltwo.levelthree.levelfour=value four"])
+
+    def test_yaml_loaded_integration(self):
+        yaml_file = StringIO('''
+---
+charts:
+  my-chart:
+    set-values:
+      keyone: value one
+      keytwo:
+        keythree: value three
+        keyfour:
+        - --settings
+      keyfive:
+      - --one
+      - --two
+      deeplynested_objects:
+      - name: hiya
+        another:
+          nested: value
+          nesting: value
+      - non: conforming
+        lists:
+        - more lists
+        - and more
+        - and:
+            a_random_dict: value
+''')
+        course = Handler.load(yaml_file)
+        chart = Chart(course["charts"], None)
+        chart.build_set_arguments()
+        self.assertEqual(chart.args, [
+            "--set", "keyone=value one",
+            "--set", "keytwo.keythree=value three",
+            "--set", "keytwo.keyfour[0]=--settings",
+            "--set", "keyfive[0]=--one",
+            "--set", "keyfive[1]=--two",
+            "--set", "deeplynested_objects[0].name=hiya",
+            "--set", "deeplynested_objects[0].another.nested=value",
+            "--set", "deeplynested_objects[0].another.nesting=value",
+            "--set", "deeplynested_objects[1].non=conforming",
+            "--set", "deeplynested_objects[1].lists[0]=more lists",
+            "--set", "deeplynested_objects[1].lists[1]=and more",
+            "--set", "deeplynested_objects[1].lists[2].and.a_random_dict=value",
+        ])
+
+    def test_null_value(self):
+        chart = Chart(self.chart_object, None)
+        chart.set_values = {
+            "testnull": None,
+        }
+
+        chart.build_set_arguments()
+        self.assertEqual(chart.args, [
+            "--set", "testnull=null",
+        ])
+
+
+class TestBuildSetStringsArguments(unittest.TestCase):
+    """Test building of set strings"""
+
+    def setUp(self):
+        self.chart_object = {
+            "fake-chart": {
+                "values-strings": {
+                    "keyone": "valueone",
+                }
+            }
+        }
+
+    def test_flat_key_values(self):
+        chart = Chart(self.chart_object, None)
+
+        self.assertEqual(chart.args, [], "self.args should be empty before running")
+        chart.build_set_string_arguments()
+        self.assertEqual(chart.args, ["--set-string", "keyone=valueone"], "Expected build_set_arguments to build --set args correctly.")
+
+    def test_dicts(self):
+        chart = Chart(self.chart_object, None)
+        chart.values_strings = {
+            "levelone": {
+                "leveltwo": "valuetwo",
+            }
+        }
+
+        chart.build_set_string_arguments()
+        self.assertEqual(chart.args, ["--set-string", "levelone.leveltwo=valuetwo"])
+
+        chart.args = []
+        chart.values_strings = {
+            "levelone": {
+                "leveltwo": {
+                    "levelthree": {
+                        "levelfour": "value four",
+                    }
+                }
+            }
+        }
+        chart.build_set_string_arguments()
+        self.assertEqual(chart.args, ["--set-string", "levelone.leveltwo.levelthree.levelfour=value four"])
+
+    def test_yaml_loaded_integration(self):
+        yaml_file = StringIO('''
+---
+charts:
+  my-chart:
+    values-strings:
+      keyone: value one
+      keytwo:
+        keythree: value three
+        keyfour:
+        - --settings
+      keyfive:
+      - --one
+      - --two
+      deeplynested_objects:
+      - name: hiya
+        another:
+          nested: value
+          nesting: value
+      - non: conforming
+        lists:
+        - more lists
+        - and more
+        - and:
+            a_random_dict: value
+''')
+        course = Handler.load(yaml_file)
+        chart = Chart(course["charts"], None)
+        chart.build_set_string_arguments()
+        self.assertEqual(chart.args, [
+            "--set-string", "keyone=value one",
+            "--set-string", "keytwo.keythree=value three",
+            "--set-string", "keytwo.keyfour[0]=--settings",
+            "--set-string", "keyfive[0]=--one",
+            "--set-string", "keyfive[1]=--two",
+            "--set-string", "deeplynested_objects[0].name=hiya",
+            "--set-string", "deeplynested_objects[0].another.nested=value",
+            "--set-string", "deeplynested_objects[0].another.nesting=value",
+            "--set-string", "deeplynested_objects[1].non=conforming",
+            "--set-string", "deeplynested_objects[1].lists[0]=more lists",
+            "--set-string", "deeplynested_objects[1].lists[1]=and more",
+            "--set-string", "deeplynested_objects[1].lists[2].and.a_random_dict=value",
+        ])
+
+    def test_null_value(self):
+        chart = Chart(self.chart_object, None)
+        chart.values_strings = {
+            "testnull": None,
+        }
+
+        chart.build_set_string_arguments()
+        self.assertEqual(chart.args, [
+            "--set-string", "testnull=null",
+        ])

@@ -1,6 +1,6 @@
 # -- coding: utf-8 --
 
-# Copyright 2019 ReactiveOps Inc
+# Copyright 2019 FairwindsOps Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import os
 import shutil
 import mock
 import reckoner
-import yaml
+import ruamel.yaml as yaml
 
 from reckoner.reckoner import Reckoner
 from reckoner.config import Config
@@ -77,28 +77,8 @@ class TestReckonerAttributes(TestBase):
         self.assertTrue(hasattr(reckoner_instance, 'helm'))
 
 
-# Test methods
-@mock.patch('reckoner.reckoner.Config', autospec=True)
-@mock.patch('reckoner.reckoner.Course', autospec=True)
-@mock.patch.object(HelmClient, 'server_version')
-@mock.patch.object(HelmClient, 'check_helm_command')
-class TestReckonerMethods(TestBase):
-    name = 'test-reckoner-methods'
-
-    def setUp(self):
-        super(type(self), self).setUp()
-        self.configure_subprocess_mock('', '', 0)
-
-    def test_install_succeeds(self, *args):
-        reckoner_instance = reckoner.reckoner.Reckoner()
-        reckoner_instance.course.plot.return_value = True
-        install_response = reckoner_instance.install()
-        self.assertIsInstance(install_response, bool)
-        self.assertTrue(install_response)
-
-
 class TestCourseMocks(unittest.TestCase):
-    @mock.patch('reckoner.course.yaml', autospec=True)
+    @mock.patch('reckoner.course.yaml_handler', autospec=True)
     @mock.patch('reckoner.course.HelmClient', autospec=True)
     def test_raises_errors_when_missing_heading(self, mock_helm, mock_yaml):
         course_yml = {
@@ -120,7 +100,7 @@ class TestCourseMocks(unittest.TestCase):
         with self.assertRaises(exception.NoChartsToInstall):
             instance.plot(['a-chart-that-is-not-defined'])
 
-    @mock.patch('reckoner.course.yaml', autospec=True)
+    @mock.patch('reckoner.course.yaml_handler', autospec=True)
     @mock.patch('reckoner.course.HelmClient', autospec=True)
     def test_passes_if_any_charts_exist(self, mock_helm, mock_yaml):
         course_yml = {
@@ -146,7 +126,7 @@ test_course = "./tests/test_course.yml"
 git_repo_path = "./test"
 
 with open(test_course, 'r') as yaml_stream:
-    course_yaml_dict = yaml.load(yaml_stream, Loader=yaml.loader.FullLoader)
+    course_yaml_dict = yaml.load(yaml_stream, Loader=yaml.Loader)
 test_release_names = list(course_yaml_dict['charts'].keys())
 test_repositories = ['stable', 'incubator'],
 test_minimum_versions = ['helm', 'reckoner']
@@ -243,7 +223,6 @@ test_repo_install_return_string = '"test_repo" has been added to your repositori
 def setUpModule():
     coloredlogs.install(level="DEBUG")
     config = Config()
-    config.local_development = True
 
     os.makedirs(test_helm_archive)
     os.environ['HELM_HOME'] = test_files_path
@@ -260,22 +239,15 @@ def tearDownModule():
 class TestReckoner(TestBase):
     name = "test-pentagon-base"
 
-    def setUp(self):
+    @mock.patch('reckoner.reckoner.HelmClient', autospec=True)
+    @mock.patch('reckoner.course.HelmClient', autospec=True)
+    def setUp(self, mock_helm_client_course_scope, mock_helm_client_reckoner_scope):
+        mock_helm_client_course_instance = mock_helm_client_course_scope()
+        mock_helm_client_course_instance.client_version = "100.100.100"
         super(type(self), self).setUp()
-        # This will eventually be need for integration testing
-        # repo = git.Repo.init(git_repo_path)
-        # os.chdir(git_repo_path)
-        # subprocess.call(["helm", "create", "chart"])
-        # # Create git chart in a git repo, then have it checkout the repo from that location
-        # logging.debug(os.listdir("./"))
-        # os.chdir("../")
         self.configure_subprocess_mock(test_tiller_present_return_string, '', 0)
         with open(test_course) as f:
-            self.a = Reckoner(course_file=f, local_development=True)
-
-    # def tearDown(self):
-    #     self.a = None
-    #     subprocess.call(['rm', '-rf', git_repo_path])
+            self.a = Reckoner(course_file=f)
 
     def test_instance(self):
         self.assertIsInstance(self.a, Reckoner)
@@ -283,13 +255,17 @@ class TestReckoner(TestBase):
     def test_config_instance(self):
         self.assertIsInstance(self.a.config, Config)
 
-    def test_install(self):
-        self.assertTrue(self.a.install())
+    @mock.patch('reckoner.repository.git', autospec=True)
+    def test_install(self, mock_git_lib):
+        self.assertEqual(self.a.install(), None)
 
 
 class TestCourse(TestBase):
 
-    def setUp(self):
+    @mock.patch('reckoner.course.HelmClient', autospec=True)
+    def setUp(self, mock_helm_client_course_scope, autospec=True):
+        mock_helm_client_course_instance = mock_helm_client_course_scope()
+        mock_helm_client_course_instance.client_version = '100.100.100'
         super(type(self), self).setUp()
         self.configure_subprocess_mock(test_repo_update_return_string, '', 0)
         with open(test_course) as f:
@@ -319,11 +295,16 @@ class TestCourse(TestBase):
 
 class TestChart(TestBase):
 
-    def setUp(self):
+    @mock.patch('reckoner.reckoner.HelmClient', autospec=True)
+    @mock.patch('reckoner.course.HelmClient', autospec=True)
+    def setUp(self, mock_helm_client_course_scope, mock_helm_client_reckoner_scope):
+        mock_helm_client_course_instance = mock_helm_client_course_scope()
+        mock_helm_client_course_instance.client_version = "100.100.100"
+        self.helm_client_mock = mock_helm_client_course_instance
         super(type(self), self).setUp()
         self.configure_subprocess_mock(test_tiller_present_return_string, '', 0)
         with open(test_course) as f:
-            self.a = Reckoner(course_file=f, local_development=True)
+            self.a = Reckoner(course_file=f)
         self.charts = self.a.course.charts
 
     def test_releasename_is_different_than_chart_name(self):
@@ -343,16 +324,16 @@ class TestChart(TestBase):
                 self.assertEqual(chart.repository.name, Repository(test_incubator_repository_str, mock.Mock()).name)
                 self.assertIsNone(chart.repository.url)
 
-    def test_chart_values(self):
+    def test_chart_set_values(self):
         for chart in self.charts:
             if chart.name == test_flat_values_chart:
-                self.assertEqual(chart.values, test_flat_values)
-                self.assertIsInstance(chart.values, dict)
-                self.assertIsInstance(chart.values['string'], str)
-                self.assertIsInstance(chart.values['integer'], int)
-                self.assertIsInstance(chart.values['boolean'], bool)
+                self.assertEqual(chart.set_values, test_flat_values)
+                self.assertIsInstance(chart.set_values, dict)
+                self.assertIsInstance(chart.set_values['string'], str)
+                self.assertIsInstance(chart.set_values['integer'], int)
+                self.assertIsInstance(chart.set_values['boolean'], bool)
             elif chart.name == test_nested_values_chart:
-                self.assertEqual(chart.values, test_nested_values)
+                self.assertEqual(chart.set_values, test_nested_values)
             elif chart.release_name == test_values_strings_chart:
                 self.assertIsInstance(chart.values_strings['string'], str)
                 self.assertIsInstance(chart.values_strings['integer'], int)
@@ -377,27 +358,22 @@ class TestChart(TestBase):
         """
         pass
 
-    def test_chart_install(self):
-        self.configure_subprocess_mock(test_helm_version_return_string, '', 0)
+    @mock.patch('reckoner.repository.git', autospec=True)
+    def test_chart_install(self, mock_git_lib):
         for chart in self.charts:
-            self.subprocess_mock.assert_called()
             os.environ[test_environ_var_name] = test_environ_var
             assert chart.install(test_namespace) is None
+            self.helm_client_mock.upgrade.assert_called()
             logging.debug(chart)
 
             # TODO - we really need to refactor this to be better about testing in the same layer
             #        this is traversing many layers in the code that could be better encapsulated
 
-            last_mock = self.subprocess_mock.call_args_list[-1][0][0]
+            last_mock = self.helm_client_mock.upgrade.call_args_list[-1][0][0]
             logging.debug(last_mock)
             self.assertEqual(
-                last_mock[0:6],
+                last_mock[0:2],
                 [
-                    'helm',
-                    'upgrade',
-                    '--recreate-pods',
-                    '--install',
-                    # '--namespace={}'.format(chart.namespace),
                     chart.release_name,
                     chart.repository.chart_path,
                 ]
@@ -407,38 +383,36 @@ class TestChart(TestBase):
                 self.assertEqual(
                     last_mock,
                     [
-                        'helm',
-                        'upgrade',
-                        '--recreate-pods',
-                        '--install',
                         chart.release_name,
                         chart.repository.chart_path,
-                        '--namespace={}'.format(chart.namespace),
-                        '--set={}={}'.format(test_environ_var_name, test_environ_var)]
+                        '--namespace',
+                        '{}'.format(chart.namespace),
+                        '--set',
+                        '{}={}'.format(test_environ_var_name, test_environ_var)]
                 )
             if chart.release_name == test_values_strings_chart:
                 self.assertEqual(
                     last_mock,
                     [
-                        'helm',
-                        'upgrade',
-                        '--recreate-pods',
-                        '--install',
                         chart.release_name,
                         chart.repository.chart_path,
-                        '--namespace={}'.format(chart.namespace),
-                        '--version=0.1.0',
-                        '--set-string=string=string',
-                        '--set-string=integer=10',
-                        '--set-string=boolean=True'
+                        '--namespace',
+                        '{}'.format(chart.namespace),
+                        '--version',
+                        '0.1.0',
+                        '--set-string',
+                        'string=string',
+                        '--set-string',
+                        'integer=10',
+                        '--set-string',
+                        'boolean=True'
                     ]
                 )
 
 
 class TestRepository(TestBase):
-
-    def test_git_repository(self):
-        self.configure_subprocess_mock('', '', 0)
+    @mock.patch('reckoner.repository.git', autospec=True)
+    def test_git_repository(self, mock_git_lib):
         helm_mock = mock.Mock()
         helm_mock.repositories = []
         r = Repository(test_git_repository, helm_mock)
@@ -448,7 +422,6 @@ class TestRepository(TestBase):
         self.assertEqual(r.install("test_chart"), None)
 
     def test_tgz_repository(self):
-        self.configure_subprocess_mock('', '', 0)
         helm_mock = mock.Mock()
         helm_mock.repositories = []
         r = Repository(test_repository_dict, helm_mock)
